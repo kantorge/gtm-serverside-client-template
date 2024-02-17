@@ -30,42 +30,107 @@ const traceId = getRequestHeader('trace-id');
 const path = getRequestPath();
 logToConsoleIfEnabled('Message', 'Starting Exponea client script to serve ' + path);
 
+// Define the default path, which is served statically from the proxy
+const staticPathList = [
+    '/js/exponea.min.js',
+];
+
+// Get the user defined static path list and merge it with the default one, accounting for duplicates
+const customStaticPathList = data.proxyStaticPathList || [];
+customStaticPathList.forEach((item) => {
+    const path = item.filePath.trim();
+    if (staticPathList.indexOf(path) > -1) {
+        staticPathList.push(path);
+    }
+});
+
+// Check if this Client should serve any static files
+if (staticPathList.indexOf(path) > -1) {
+    logToConsoleIfEnabled('Message', 'Claiming request');
     claimRequest();
 
     const now = getTimestampMillis();
     const thirty_minutes_ago = now - (30 * 60 * 1000);
 
-    if (templateDataStorage.getItemCopy('exponea_js') == null || templateDataStorage.getItemCopy('exponea_stored_at') < thirty_minutes_ago) {
-        sendHttpGet('https://api.exponea.com/js/exponea.min.js', {headers: {'X-Forwarded-For': getRemoteAddress()}}).then((result) => {
+    if (templateDataStorage.getItemCopy(path) == null || templateDataStorage.getItemCopy(path + '_stored_at') < thirty_minutes_ago) {
+        const completeURL = data.targetAPI + path;
+        logToConsoleIfEnabled(
+            'Response',
+            'Serving and caching static file',
+            {
+                'Path': path,
+                'URL': completeURL,
+            }
+        );
+
+        sendHttpGet(
+            completeURL,
+            {
+                headers: {'X-Forwarded-For': getRemoteAddress()}
+            }
+        ).then((result) => {
             if (result.statusCode === 200) {
-                templateDataStorage.setItemCopy('exponea_js', result.body);
+                templateDataStorage.setItemCopy(path, result.body);
                 templateDataStorage.setItemCopy('exponea_headers', result.headers);
-                templateDataStorage.setItemCopy('exponea_stored_at', now);
+                templateDataStorage.setItemCopy(path + '_stored_at', now);
             }
             sendProxyResponse(result.body, result.headers, result.statusCode);
         });
     } else {
+        logToConsoleIfEnabled(
+            'Response',
+            'Serving static file from cache',
+            {
+                'Path': path,
+            }
+        );
+
         sendProxyResponse(
-            templateDataStorage.getItemCopy('exponea_js'),
+            templateDataStorage.getItemCopy(path),
             templateDataStorage.getItemCopy('exponea_headers'),
             200
         );
     }
+
+    return;
 }
 
 // Check if this Client should serve exponea.js.map file (Just only to avoid annoying error in console)
+if (path === '/js/exponea.min.js.map') {
     logToConsoleIfEnabled('Response', 'Absorping exponea.min.js.map request');
     sendProxyResponse('{"version": 1, "mappings": "", "sources": [], "names": [], "file": ""}', {'Content-Type': 'application/json'}, 200);
+
+    return;
 }
 
-// Check if this Client should claim request
-if (path !== '/bulk' && path !== '/managed-tags/show' && path !== '/campaigns/banners/show' && path !== ('/webxp/projects/'+data.projectToken+'/bundle')) {
+// Check if this Client should claim the request.
+// The values are provided as the beginning of the supported paths
+var managedPathList = [
+    '/bulk',
+    '/managed-tags/show',
+    '/campaigns/banners/show',
+    '/campaigns/experiments/show',
+    '/campaigns/html/get',
+    '/optimization/recommend/user',
+    '/webxp/projects/',
+    '/webxp/data/modifications/',
+    '/webxp/bandits/reward',
+    '/webxp/script-async/',
+    '/webxp/script/',
+];
+
+// When there is no match, we should abort the request, as there are no further actions to be taken
+if (!managedPathList.some(pattern => startsWith(path,pattern))) {
+    logToConsoleIfEnabled('Message', 'Aborting, irrelevant request path: ' + path);
+
     return;
 }
 
 /**
  * This is one of the main functionalities, where we pass the request to the Exponea API, and then forward the response to the client
  */
+
+logToConsoleIfEnabled('Message', 'Path is in the list of managed paths, claiming request');
 claimRequest();
 
 
@@ -262,3 +327,13 @@ function logToConsoleIfEnabled(type, message, data) {
     }));
 }
 
+/**
+ * Helper function to determine if an input string starts with an other given string
+ *
+ * @param {string} input
+ * @param {string} pattern
+ * @returns {boolean}
+ */
+function startsWith(input, pattern) {
+    return input.indexOf(pattern) === 0;
+}
