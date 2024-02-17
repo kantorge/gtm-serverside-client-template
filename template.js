@@ -19,10 +19,17 @@ const setResponseHeader = require('setResponseHeader');
 const setResponseStatus = require('setResponseStatus');
 const getContainerVersion = require('getContainerVersion');
 const getRemoteAddress = require('getRemoteAddress');
-const path = getRequestPath();
 
-// Check if this Client should serve exponea.js file
-if (path === data.proxyJsFilePath) {
+// Prepare optionally enabled logging
+const containerVersion = getContainerVersion();
+const isDebug = containerVersion.debugMode;
+const isLoggingEnabled = determinateIsLoggingEnabled();
+
+// Let's get processing the requested path
+const traceId = getRequestHeader('trace-id');
+const path = getRequestPath();
+logToConsoleIfEnabled('Message', 'Starting Exponea client script to serve ' + path);
+
     claimRequest();
 
     const now = getTimestampMillis();
@@ -47,7 +54,7 @@ if (path === data.proxyJsFilePath) {
 }
 
 // Check if this Client should serve exponea.js.map file (Just only to avoid annoying error in console)
-if (path === '/exponea.min.js.map') {
+    logToConsoleIfEnabled('Response', 'Absorping exponea.min.js.map request');
     sendProxyResponse('{"version": 1, "mappings": "", "sources": [], "names": [], "file": ""}', {'Content-Type': 'application/json'}, 200);
 }
 
@@ -76,30 +83,27 @@ const requestBody = getRequestBody();
 const requestUrl = generateRequestUrl();
 const requestHeaders = generateRequestHeaders();
 
-if (isLoggingEnabled) {
-    logToConsole(JSON.stringify({
-        'Name': 'Exponea',
-        'Type': 'Request',
-        'TraceId': traceId,
+logToConsoleIfEnabled(
+    'Request',
+    'Forwarding http request to Exponea',
+    {
         'RequestOrigin': requestOrigin,
         'RequestMethod': requestMethod,
         'RequestUrl': requestUrl,
         'RequestHeaders': requestHeaders,
         'RequestBody': requestBody,
-    }));
-}
+    }
+);
 
-sendHttpRequest(requestUrl, {method: requestMethod, headers: requestHeaders}, requestBody).then((result) => {
-    if (isLoggingEnabled) {
-        logToConsole(JSON.stringify({
-            'Name': 'Exponea',
-            'Type': 'Response',
-            'TraceId': traceId,
+    logToConsoleIfEnabled(
+        'Response',
+        'Response to forwarded request recieved',
+        {
             'ResponseStatusCode': result.statusCode,
             'ResponseHeaders': result.headers,
             'ResponseBody': result.body,
-        }));
-    }
+        }
+    );
 
     for (const key in result.headers) {
         if (key === 'set-cookie') {
@@ -235,3 +239,26 @@ function determinateIsLoggingEnabled() {
 
     return data.logType === 'always';
 }
+
+/**
+ * Logs the message to the console if logging is enabled.
+ *
+ * @param {string} type - The type of the log message. Expected values are: Request, Response, Message.
+ * @param {string} message - The message to be logged.
+ * @param {Object} data - The data to be logged.
+ * @returns {void}
+ */
+function logToConsoleIfEnabled(type, message, data) {
+    if (!isLoggingEnabled) {
+        return;
+    }
+
+    logToConsole(JSON.stringify({
+        Name: 'Exponea Analytics Client',
+        Type: type,
+        TraceId: traceId,
+        Message: message,
+        Data: data
+    }));
+}
+
