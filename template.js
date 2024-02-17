@@ -133,15 +133,11 @@ if (!managedPathList.some(pattern => startsWith(path,pattern))) {
 logToConsoleIfEnabled('Message', 'Path is in the list of managed paths, claiming request');
 claimRequest();
 
-
+// Define the white list of cookies and headers to be passed to Exponea
 const cookieWhiteList = ['xnpe_' + data.projectToken, '__exponea_etc__', '__exponea_time2__'];
 const headerWhiteList = ['referer', 'user-agent', 'etag'];
 
-const containerVersion = getContainerVersion();
-const isDebug = containerVersion.debugMode;
-const isLoggingEnabled = determinateIsLoggingEnabled();
-const traceId = getRequestHeader('trace-id');
-
+// Grab the details of the request, and forward it to Exponea based on the configured endpoint
 const requestOrigin = getRequestHeader('Origin');
 const requestMethod = getRequestMethod();
 const requestBody = getRequestBody();
@@ -160,6 +156,15 @@ logToConsoleIfEnabled(
     }
 );
 
+sendHttpRequest(
+    requestUrl,
+    {
+        method: requestMethod,
+        headers: requestHeaders
+    },
+    requestBody
+)
+.then((result) => {
     logToConsoleIfEnabled(
         'Response',
         'Response to forwarded request recieved',
@@ -170,15 +175,27 @@ logToConsoleIfEnabled(
         }
     );
 
+    // Pass the response headers to the client, with a few exceptions
     for (const key in result.headers) {
+        // Skip the 'set-cookie' header, as it is processed separately by creating the response cookies
         if (key === 'set-cookie') {
             setResponseCookies(result.headers[key]);
-        } else {
-            setResponseHeader(key, result.headers[key]);
+            continue;
         }
+
+        // CORS headers are skipped and set separately
+        if (key.toLowerCase() === 'access-control-allow-origin') continue;
+        if (key.toLowerCase() === 'access-control-allow-credentials') continue;
+
+        // Temporarily disable the transfer-encoding header, as it is not supported by the proxy
+        if (key.toLowerCase() === 'transfer-encoding') continue;
+
+        // Pass all other headers to the client
+        setResponseHeader(key, result.headers[key]);
     }
 
-    setResponseBody(result.body);
+    // Set response body and status code
+    setResponseBody(result.body || '');
     setResponseStatus(result.statusCode);
 
     // Set the CORS headers
@@ -187,7 +204,20 @@ logToConsoleIfEnabled(
         setResponseHeader('access-control-allow-credentials', 'true');
     }
 
+    // Set a custom header to indicate that the response was processed by SGTM
+    setResponseHeader('X-Processed-By-SGTM', 'true');
+
     returnResponse();
+
+    logToConsoleIfEnabled(
+        'Response',
+        'Exponea response sent to client',
+        {
+            statusCode: result.statusCode,
+            headers: result.headers,
+        }
+    );
+});
 
 /**
  * This is the end of the main functionality, where we pass the request to the Exponea API, and then forward the response to the client
