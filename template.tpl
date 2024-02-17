@@ -1,12 +1,4 @@
-﻿___TERMS_OF_SERVICE___
-
-By creating or modifying this file you agree to Google Tag Manager's Community
-Template Gallery Developer Terms of Service available at
-https://developers.google.com/tag-manager/gallery-tos (or such other URL as
-Google may provide), as modified from time to time.
-
-
-___INFO___
+﻿___INFO___
 
 {
   "type": "CLIENT",
@@ -38,7 +30,8 @@ ___TEMPLATE_PARAMETERS___
       {
         "type": "NON_EMPTY"
       }
-    ]
+    ],
+    "help": "Please provide your Exponea project token. It is used to correctly handle Exponea cookies in forwarded requests."
   },
   {
     "type": "TEXT",
@@ -49,19 +42,25 @@ ___TEMPLATE_PARAMETERS___
       {
         "type": "NON_EMPTY"
       }
-    ]
+    ],
+    "help": "The root URL, where Exponea requests need to be forwarded.",
+    "valueHint": "e.g https://exponea.example.com"
   },
   {
-    "type": "TEXT",
-    "name": "proxyJsFilePath",
-    "displayName": "A path that will be used for the exponea.js serving",
-    "simpleValueType": true,
-    "valueValidators": [
+    "type": "SIMPLE_TABLE",
+    "name": "proxyStaticPathList",
+    "displayName": "List of files, which are served statically. `/js/exponea.min.js` is handled by default, and it doesn\u0027t have to be repeated.",
+    "simpleTableColumns": [
       {
-        "type": "NON_EMPTY"
+        "defaultValue": "",
+        "displayName": "File path",
+        "name": "filePath",
+        "type": "TEXT",
+        "valueHint": "/path/to/file.js",
+        "isUnique": true,
+        "valueValidators": []
       }
-    ],
-    "defaultValue": "/js/exponea.min.js"
+    ]
   },
   {
     "type": "GROUP",
@@ -96,6 +95,7 @@ ___TEMPLATE_PARAMETERS___
 
 ___SANDBOXED_JS_FOR_SERVER___
 
+// Import required modules
 const claimRequest = require('claimRequest');
 const getCookieValues = require('getCookieValues');
 const getRequestBody = require('getRequestBody');
@@ -116,105 +116,216 @@ const setResponseHeader = require('setResponseHeader');
 const setResponseStatus = require('setResponseStatus');
 const getContainerVersion = require('getContainerVersion');
 const getRemoteAddress = require('getRemoteAddress');
-const path = getRequestPath();
 
-// Check if this Client should serve exponea.js file
-if (path === data.proxyJsFilePath) {
+// Prepare optionally enabled logging
+const containerVersion = getContainerVersion();
+const isDebug = containerVersion.debugMode;
+const isLoggingEnabled = determinateIsLoggingEnabled();
+
+// Let's get processing the requested path
+const traceId = getRequestHeader('trace-id');
+const path = getRequestPath();
+logToConsoleIfEnabled('Message', 'Starting Exponea client script to serve ' + path);
+
+// Define the default path, which is served statically from the proxy
+const staticPathList = [
+    '/js/exponea.min.js',
+];
+
+// Get the user defined static path list and merge it with the default one, accounting for duplicates
+const customStaticPathList = data.proxyStaticPathList || [];
+customStaticPathList.forEach((item) => {
+    const path = item.filePath.trim();
+    if (staticPathList.indexOf(path) > -1) {
+        staticPathList.push(path);
+    }
+});
+
+// Check if this Client should serve any static files
+if (staticPathList.indexOf(path) > -1) {
+    logToConsoleIfEnabled('Message', 'Claiming request');
     claimRequest();
 
     const now = getTimestampMillis();
     const thirty_minutes_ago = now - (30 * 60 * 1000);
 
-    if (templateDataStorage.getItemCopy('exponea_js') == null || templateDataStorage.getItemCopy('exponea_stored_at') < thirty_minutes_ago) {
-        sendHttpGet('https://api.exponea.com/js/exponea.min.js', {headers: {'X-Forwarded-For': getRemoteAddress()}}).then((result) => {
+    if (templateDataStorage.getItemCopy(path) == null || templateDataStorage.getItemCopy(path + '_stored_at') < thirty_minutes_ago) {
+        const completeURL = data.targetAPI + path;
+        logToConsoleIfEnabled(
+            'Response',
+            'Serving and caching static file',
+            {
+                'Path': path,
+                'URL': completeURL,
+            }
+        );
+
+        sendHttpGet(
+            completeURL,
+            {
+                headers: {'X-Forwarded-For': getRemoteAddress()}
+            }
+        ).then((result) => {
             if (result.statusCode === 200) {
-                templateDataStorage.setItemCopy('exponea_js', result.body);
+                templateDataStorage.setItemCopy(path, result.body);
                 templateDataStorage.setItemCopy('exponea_headers', result.headers);
-                templateDataStorage.setItemCopy('exponea_stored_at', now);
+                templateDataStorage.setItemCopy(path + '_stored_at', now);
             }
             sendProxyResponse(result.body, result.headers, result.statusCode);
         });
     } else {
+        logToConsoleIfEnabled(
+            'Response',
+            'Serving static file from cache',
+            {
+                'Path': path,
+            }
+        );
+
         sendProxyResponse(
-            templateDataStorage.getItemCopy('exponea_js'),
+            templateDataStorage.getItemCopy(path),
             templateDataStorage.getItemCopy('exponea_headers'),
             200
         );
     }
-}
 
-// Check if this Client should serve exponea.js.map file (Just only to avoid annoying error in console)
-if (path === '/exponea.min.js.map') {
-    sendProxyResponse('{"version": 1, "mappings": "", "sources": [], "names": [], "file": ""}', {'Content-Type': 'application/json'}, 200);
-}
-
-// Check if this Client should claim request
-if (path !== '/bulk' && path !== '/managed-tags/show' && path !== '/campaigns/banners/show' && path !== ('/webxp/projects/'+data.projectToken+'/bundle')) {
     return;
 }
 
+// Check if this Client should serve exponea.js.map file (Just only to avoid annoying error in console)
+if (path === '/js/exponea.min.js.map') {
+    logToConsoleIfEnabled('Response', 'Absorping exponea.min.js.map request');
+    sendProxyResponse('{"version": 1, "mappings": "", "sources": [], "names": [], "file": ""}', {'Content-Type': 'application/json'}, 200);
+
+    return;
+}
+
+// Check if this Client should claim the request.
+// The values are provided as the beginning of the supported paths
+var managedPathList = [
+    '/bulk',
+    '/managed-tags/show',
+    '/campaigns/banners/show',
+    '/campaigns/experiments/show',
+    '/campaigns/html/get',
+    '/optimization/recommend/user',
+    '/webxp/projects/',
+    '/webxp/data/modifications/',
+    '/webxp/bandits/reward',
+    '/webxp/script-async/',
+    '/webxp/script/',
+];
+
+// When there is no match, we should abort the request, as there are no further actions to be taken
+if (!managedPathList.some(pattern => startsWith(path,pattern))) {
+    logToConsoleIfEnabled('Message', 'Aborting, irrelevant request path: ' + path);
+
+    return;
+}
+
+/**
+ * This is one of the main functionalities, where we pass the request to the Exponea API, and then forward the response to the client
+ */
+
+logToConsoleIfEnabled('Message', 'Path is in the list of managed paths, claiming request');
 claimRequest();
 
-
+// Define the white list of cookies and headers to be passed to Exponea
 const cookieWhiteList = ['xnpe_' + data.projectToken, '__exponea_etc__', '__exponea_time2__'];
 const headerWhiteList = ['referer', 'user-agent', 'etag'];
 
-const containerVersion = getContainerVersion();
-const isDebug = containerVersion.debugMode;
-const isLoggingEnabled = determinateIsLoggingEnabled();
-const traceId = getRequestHeader('trace-id');
-
+// Grab the details of the request, and forward it to Exponea based on the configured endpoint
 const requestOrigin = getRequestHeader('Origin');
 const requestMethod = getRequestMethod();
 const requestBody = getRequestBody();
 const requestUrl = generateRequestUrl();
 const requestHeaders = generateRequestHeaders();
 
-if (isLoggingEnabled) {
-    logToConsole(JSON.stringify({
-        'Name': 'Exponea',
-        'Type': 'Request',
-        'TraceId': traceId,
+logToConsoleIfEnabled(
+    'Request',
+    'Forwarding http request to Exponea',
+    {
         'RequestOrigin': requestOrigin,
         'RequestMethod': requestMethod,
         'RequestUrl': requestUrl,
         'RequestHeaders': requestHeaders,
         'RequestBody': requestBody,
-    }));
-}
+    }
+);
 
-sendHttpRequest(requestUrl, {method: requestMethod, headers: requestHeaders}, requestBody).then((result) => {
-    if (isLoggingEnabled) {
-        logToConsole(JSON.stringify({
-            'Name': 'Exponea',
-            'Type': 'Response',
-            'TraceId': traceId,
+sendHttpRequest(
+    requestUrl,
+    {
+        method: requestMethod,
+        headers: requestHeaders
+    },
+    requestBody
+)
+.then((result) => {
+    logToConsoleIfEnabled(
+        'Response',
+        'Response to forwarded request recieved',
+        {
             'ResponseStatusCode': result.statusCode,
             'ResponseHeaders': result.headers,
             'ResponseBody': result.body,
-        }));
-    }
+        }
+    );
 
+    // Pass the response headers to the client, with a few exceptions
     for (const key in result.headers) {
+        // Skip the 'set-cookie' header, as it is processed separately by creating the response cookies
         if (key === 'set-cookie') {
             setResponseCookies(result.headers[key]);
-        } else {
-            setResponseHeader(key, result.headers[key]);
+            continue;
         }
+
+        // CORS headers are skipped and set separately
+        if (key.toLowerCase() === 'access-control-allow-origin') continue;
+        if (key.toLowerCase() === 'access-control-allow-credentials') continue;
+
+        // Temporarily disable the transfer-encoding header, as it is not supported by the proxy
+        if (key.toLowerCase() === 'transfer-encoding') continue;
+
+        // Pass all other headers to the client
+        setResponseHeader(key, result.headers[key]);
     }
 
-    setResponseBody(result.body);
+    // Set response body and status code
+    setResponseBody(result.body || '');
     setResponseStatus(result.statusCode);
 
+    // Set the CORS headers
     if (requestOrigin) {
         setResponseHeader('access-control-allow-origin', requestOrigin);
         setResponseHeader('access-control-allow-credentials', 'true');
     }
 
+    // Set a custom header to indicate that the response was processed by SGTM
+    setResponseHeader('X-Processed-By-SGTM', 'true');
+
     returnResponse();
+
+    logToConsoleIfEnabled(
+        'Response',
+        'Exponea response sent to client',
+        {
+            statusCode: result.statusCode,
+            headers: result.headers,
+        }
+    );
 });
 
+/**
+ * This is the end of the main functionality, where we pass the request to the Exponea API, and then forward the response to the client
+ * The rest of the file contains helper functions
+ */
 
+/**
+ * Helper function to generate the request URL based on the target API and the requested path
+ *
+ * @returns {string} The generated request URL
+ */
 function generateRequestUrl() {
     let url = data.targetAPI + getRequestPath();
     const queryParams = getRequestQueryString();
@@ -224,6 +335,11 @@ function generateRequestUrl() {
     return url;
 }
 
+/**
+ * Generates the request headers based on the predefined white list of headers and cookies.
+ *
+ * @returns {Object} The generated request headers.
+ */
 function generateRequestHeaders() {
     let headers = {};
     let cookies = [];
@@ -254,6 +370,11 @@ function generateRequestHeaders() {
     return headers;
 }
 
+/**
+ * Sets response cookies based on the provided setCookieHeader.
+ *
+ * @param {string[]} setCookieHeader - The array of cookies to be set in the response headers
+ */
 function setResponseCookies(setCookieHeader) {
     for (let i = 0; i < setCookieHeader.length; i++) {
         let setCookieArray = setCookieHeader[i].split('; ').map(pair => pair.split('='));
@@ -269,6 +390,15 @@ function setResponseCookies(setCookieHeader) {
     }
 }
 
+/**
+ * Sends a proxy response with the specified response, headers, and status code.
+ * This is a helper function to simplify the process of sending a response for simple requests.
+ *
+ * @param {any} response - The response to send.
+ * @param {Object} headers - The headers to include in the response.
+ * @param {number} statusCode - The status code of the response.
+ * @returns {void}
+ */
 function sendProxyResponse(response, headers, statusCode) {
     setResponseStatus(statusCode);
     setResponseBody(response);
@@ -280,7 +410,13 @@ function sendProxyResponse(response, headers, statusCode) {
     returnResponse();
 }
 
+/**
+ * Determines if logging is enabled based on the logType value, which is provided by the user.
+ *
+ * @returns {boolean} True if logging is enabled, false otherwise.
+ */
 function determinateIsLoggingEnabled() {
+    // As a default behavior, if no setting is available for any reason, log during debug mode only
     if (!data.logType) {
         return isDebug;
     }
@@ -296,31 +432,43 @@ function determinateIsLoggingEnabled() {
     return data.logType === 'always';
 }
 
+/**
+ * Logs the message to the console if logging is enabled.
+ *
+ * @param {string} type - The type of the log message. Expected values are: Request, Response, Message.
+ * @param {string} message - The message to be logged.
+ * @param {Object} data - The data to be logged.
+ * @returns {void}
+ */
+function logToConsoleIfEnabled(type, message, data) {
+    if (!isLoggingEnabled) {
+        return;
+    }
+
+    logToConsole(JSON.stringify({
+        Name: 'Exponea Analytics Client',
+        Type: type,
+        TraceId: traceId,
+        Message: message,
+        Data: data
+    }));
+}
+
+/**
+ * Helper function to determine if an input string starts with an other given string
+ *
+ * @param {string} input
+ * @param {string} pattern
+ * @returns {boolean}
+ */
+function startsWith(input, pattern) {
+    return input.indexOf(pattern) === 0;
+}
+
 
 ___SERVER_PERMISSIONS___
 
 [
-  {
-    "instance": {
-      "key": {
-        "publicId": "logging",
-        "versionId": "1"
-      },
-      "param": [
-        {
-          "key": "environments",
-          "value": {
-            "type": 1,
-            "string": "all"
-          }
-        }
-      ]
-    },
-    "clientAnnotations": {
-      "isEditedByUser": true
-    },
-    "isRequired": true
-  },
   {
     "instance": {
       "key": {
@@ -524,6 +672,27 @@ ___SERVER_PERMISSIONS___
       "param": []
     },
     "isRequired": true
+  },
+  {
+    "instance": {
+      "key": {
+        "publicId": "logging",
+        "versionId": "1"
+      },
+      "param": [
+        {
+          "key": "environments",
+          "value": {
+            "type": 1,
+            "string": "debug"
+          }
+        }
+      ]
+    },
+    "clientAnnotations": {
+      "isEditedByUser": true
+    },
+    "isRequired": true
   }
 ]
 
@@ -536,5 +705,3 @@ scenarios: []
 ___NOTES___
 
 Created on 24. 8. 2021, 13:27:38
-
-
