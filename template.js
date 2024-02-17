@@ -1,3 +1,4 @@
+// Import required modules
 const claimRequest = require('claimRequest');
 const getCookieValues = require('getCookieValues');
 const getRequestBody = require('getRequestBody');
@@ -55,6 +56,9 @@ if (path !== '/bulk' && path !== '/managed-tags/show' && path !== '/campaigns/ba
     return;
 }
 
+/**
+ * This is one of the main functionalities, where we pass the request to the Exponea API, and then forward the response to the client
+ */
 claimRequest();
 
 
@@ -108,15 +112,24 @@ sendHttpRequest(requestUrl, {method: requestMethod, headers: requestHeaders}, re
     setResponseBody(result.body);
     setResponseStatus(result.statusCode);
 
+    // Set the CORS headers
     if (requestOrigin) {
         setResponseHeader('access-control-allow-origin', requestOrigin);
         setResponseHeader('access-control-allow-credentials', 'true');
     }
 
     returnResponse();
-});
 
+/**
+ * This is the end of the main functionality, where we pass the request to the Exponea API, and then forward the response to the client
+ * The rest of the file contains helper functions
+ */
 
+/**
+ * Helper function to generate the request URL based on the target API and the requested path
+ *
+ * @returns {string} The generated request URL
+ */
 function generateRequestUrl() {
     let url = data.targetAPI + getRequestPath();
     const queryParams = getRequestQueryString();
@@ -126,6 +139,11 @@ function generateRequestUrl() {
     return url;
 }
 
+/**
+ * Generates the request headers based on the predefined white list of headers and cookies.
+ *
+ * @returns {Object} The generated request headers.
+ */
 function generateRequestHeaders() {
     let headers = {};
     let cookies = [];
@@ -156,6 +174,11 @@ function generateRequestHeaders() {
     return headers;
 }
 
+/**
+ * Sets response cookies based on the provided setCookieHeader.
+ *
+ * @param {string[]} setCookieHeader - The array of cookies to be set in the response headers
+ */
 function setResponseCookies(setCookieHeader) {
     for (let i = 0; i < setCookieHeader.length; i++) {
         let setCookieArray = setCookieHeader[i].split('; ').map(pair => pair.split('='));
@@ -171,6 +194,15 @@ function setResponseCookies(setCookieHeader) {
     }
 }
 
+/**
+ * Sends a proxy response with the specified response, headers, and status code.
+ * This is a helper function to simplify the process of sending a response for simple requests.
+ *
+ * @param {any} response - The response to send.
+ * @param {Object} headers - The headers to include in the response.
+ * @param {number} statusCode - The status code of the response.
+ * @returns {void}
+ */
 function sendProxyResponse(response, headers, statusCode) {
     setResponseStatus(statusCode);
     setResponseBody(response);
@@ -182,7 +214,13 @@ function sendProxyResponse(response, headers, statusCode) {
     returnResponse();
 }
 
+/**
+ * Determines if logging is enabled based on the logType value, which is provided by the user.
+ *
+ * @returns {boolean} True if logging is enabled, false otherwise.
+ */
 function determinateIsLoggingEnabled() {
+    // As a default behavior, if no setting is available for any reason, log during debug mode only
     if (!data.logType) {
         return isDebug;
     }
